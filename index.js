@@ -1,23 +1,25 @@
-// index.js (Appwrite Function) - validateResult
-const fs = require("fs");
-const sdk = require("node-appwrite");
-const Ajv = require("ajv");
-const addFormats = require("ajv-formats");
-const dayjs = require("dayjs");
+// index.js (Appwrite Function) - validateResult (ESM compatible)
 
-// local helper module — ensure this file exists in your function bundle
-const { normalizeUnit, convertIfNeeded } = require("./validateResult/ucum-utils");
+// --- Imports ---
+import fs from "fs";
+import sdk from "node-appwrite";
+import Ajv from "ajv";
+import addFormats from "ajv-formats";
+import dayjs from "dayjs";
 
-// --- Config (read from Appwrite function environment variables if present) ---
+// Local helper (ensure ./validateResult/ucum-utils.js exists and uses export)
+import { normalizeUnit, convertIfNeeded } from "./validateResult/ucum-utils.js";
+
+// --- Config (read from Appwrite env vars) ---
 const APPWRITE_ENDPOINT =
     process.env.APPWRITE_ENDPOINT || process.env.APPWRITE_FUNCTION_ENDPOINT;
 const APPWRITE_PROJECT =
     process.env.APPWRITE_PROJECT || process.env.APPWRITE_FUNCTION_PROJECT;
 const APPWRITE_KEY =
     process.env.APPWRITE_API_KEY || process.env.APPWRITE_FUNCTION_KEY;
-const DB_ID = process.env.DB_ID || "67a081e10018a7e7ec5a"; // default DB id (replace if needed)
+const DB_ID = process.env.DB_ID || "67a081e10018a7e7ec5a"; // replace if needed
 
-// Collections: prefer environment variables, fallback to fixed ids/names you provided earlier
+// Collections
 const COLS = {
     INCOMING: "67efb45500302fe3bd98",
     MAPPINGS: "68b6ee5b000a7a6dc1ce",
@@ -27,15 +29,14 @@ const COLS = {
     AUDIT: "audit_logs",
 };
 
-
-// --- Initialize Appwrite SDK ---
+// --- Appwrite SDK ---
 const client = new sdk.Client()
     .setEndpoint(APPWRITE_ENDPOINT)
     .setProject(APPWRITE_PROJECT)
     .setKey(APPWRITE_KEY);
 const databases = new sdk.Databases(client);
 
-// --- AJV schema for incoming payload validation (defensive) ---
+// --- AJV validation ---
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
 
@@ -49,7 +50,6 @@ const incomingSchema = {
         doc_id: { type: "string" },
         doc_name: { type: "string" },
         doc_profile: { type: "string" },
-        // result is an array of tests (localTestId, value, unit, timestamp)
         result: {
             type: "array",
             minItems: 1,
@@ -85,7 +85,7 @@ const incomingSchema = {
 
 const validateIncoming = ajv.compile(incomingSchema);
 
-// Helper: read payload from Appwrite function env or STDIN (works for both DB triggers and direct exec)
+// --- Helpers ---
 function readPayload() {
     try {
         if (process.env.APPWRITE_FUNCTION_EVENT_DATA) {
@@ -99,9 +99,6 @@ function readPayload() {
     return {};
 }
 
-/**
- * Small helpers to read mapping/ref fields defensively
- */
 function getLoincFromMapping(mapDoc) {
     return mapDoc?.loinc || mapDoc?.loincCode || mapDoc?.loinc_code || null;
 }
@@ -109,55 +106,43 @@ function getDefaultUnitFromMapping(mapDoc) {
     return mapDoc?.defaultUnitUCUM || mapDoc?.unit || mapDoc?.unit_ucum || null;
 }
 function extractRefRange(refDoc) {
-    // possible field names: low/high, minValue/maxValue
-    const low = refDoc?.low ?? refDoc?.minValue ?? refDoc?.min ?? undefined;
-    const high = refDoc?.high ?? refDoc?.maxValue ?? refDoc?.max ?? undefined;
-    const critLow = refDoc?.criticalLow ?? refDoc?.critLow ?? undefined;
-    const critHigh = refDoc?.criticalHigh ?? refDoc?.critHigh ?? undefined;
+    const low = refDoc?.low ?? refDoc?.minValue ?? undefined;
+    const high = refDoc?.high ?? refDoc?.maxValue ?? undefined;
+    const critLow = refDoc?.criticalLow ?? undefined;
+    const critHigh = refDoc?.criticalHigh ?? undefined;
     const sex = (refDoc?.sex || refDoc?.gender || "U").toUpperCase();
-    const ageMin = refDoc?.ageMin ?? refDoc?.minAge ?? undefined;
-    const ageMax = refDoc?.ageMax ?? refDoc?.maxAge ?? undefined;
-    const unit = refDoc?.unit ?? refDoc?.unitUCUM ?? refDoc?.unit_ucum ?? null;
+    const ageMin = refDoc?.ageMin ?? undefined;
+    const ageMax = refDoc?.ageMax ?? undefined;
+    const unit = refDoc?.unit ?? refDoc?.unitUCUM ?? null;
     return { low, high, critLow, critHigh, sex, ageMin, ageMax, unit };
 }
 
-/**
- * Main processing function
- */
+// --- Main ---
 async function main() {
     const payload = readPayload();
-    // If Appwrite DB trigger sends wrapped payload { event, payload: {...} }
     const data = payload.payload || payload || {};
 
-    // Validate payload shape
     const ok = validateIncoming(data);
     if (!ok) {
         const errors = validateIncoming.errors || [];
         console.error("Schema validation failed:", errors);
-        // return failure info for frontend or logs
         return console.log(JSON.stringify({ ok: false, reason: "schema", errors }));
     }
 
-    // Normalize patient age, sex, submittedBy
-    const patientAge =
-        typeof data.P_age === "string" ? parseFloat(data.P_age) : data.P_age;
-    const sex =
-        (data.sex || data.P_sex || data.P_gender || "U").toString().toUpperCase() || "U";
+    const patientAge = typeof data.P_age === "string" ? parseFloat(data.P_age) : data.P_age;
+    const sex = (data.sex || data.P_sex || data.P_gender || "U").toUpperCase();
     const submittedBy = data.submittedBy || data.staff_id || "unknown";
 
     const processedTests = [];
     const errors = [];
-
-    // Lightweight in-memory caches for this run
     const mappingCache = {};
     const refCache = {};
 
-    // iterate tests
     for (const t of data.result) {
         try {
             const localTestId = t.localTestId;
 
-            // 1) Load mapping (map localTestId -> LOINC)
+            // load mapping
             let mapping = mappingCache[localTestId];
             if (!mapping) {
                 const mapResp = await databases.listDocuments(DB_ID, COLS.MAPPINGS, [
@@ -168,51 +153,35 @@ async function main() {
                 mappingCache[localTestId] = mapping;
             }
             if (!mapping) {
-                errors.push({ localTestId, reason: "Missing mapping document for localTestId" });
+                errors.push({ localTestId, reason: "Missing mapping document" });
                 continue;
             }
 
             const loinc = getLoincFromMapping(mapping);
-            if (!loinc) {
-                errors.push({ localTestId, reason: "Mapping exists but no LOINC code found" });
-                continue;
-            }
+            const canonicalUnitFromMapping = getDefaultUnitFromMapping(mapping);
 
-            const canonicalUnitFromMapping = getDefaultUnitFromMapping(mapping); // may be null
-
-            // 2) Normalize unit
             const unitRaw = t.unit || "";
             const normalizedUnit = normalizeUnit(unitRaw);
             if (!normalizedUnit) {
-                errors.push({ localTestId, reason: `Unknown/unsupported unit: "${unitRaw}"` });
+                errors.push({ localTestId, reason: `Unknown unit: ${unitRaw}` });
                 continue;
             }
 
-            // parse numeric value when possible
-            const numericValue =
-                typeof t.value === "number" ? t.value : (isFinite(Number(t.value)) ? Number(t.value) : null);
-
-            let finalValue = t.value;
+            const numericValue = typeof t.value === "number" ? t.value : Number(t.value);
+            let finalValue = isNaN(numericValue) ? t.value : numericValue;
             let finalUnit = normalizedUnit;
-            if (numericValue !== null && canonicalUnitFromMapping && normalizedUnit !== canonicalUnitFromMapping) {
-                // attempt conversion
+
+            if (!isNaN(numericValue) && canonicalUnitFromMapping && normalizedUnit !== canonicalUnitFromMapping) {
                 try {
                     const converted = convertIfNeeded(numericValue, normalizedUnit, canonicalUnitFromMapping);
                     finalValue = converted.value;
                     finalUnit = canonicalUnitFromMapping;
                 } catch (err) {
-                    errors.push({
-                        localTestId,
-                        reason: `Conversion failed from ${normalizedUnit} -> ${canonicalUnitFromMapping}: ${err?.message || err}`,
-                    });
+                    errors.push({ localTestId, reason: `Conversion failed: ${err.message}` });
                     continue;
                 }
-            } else {
-                // if numericValue parsed use it
-                if (numericValue !== null) finalValue = numericValue;
             }
 
-            // 3) Load reference ranges for that LOINC
             let refs = refCache[loinc];
             if (!refs) {
                 const refResp = await databases.listDocuments(DB_ID, COLS.REFS, [sdk.Query.equal("loinc", loinc)]);
@@ -220,34 +189,26 @@ async function main() {
                 refCache[loinc] = refs;
             }
 
-            // Choose best reference based on sex/age
             const matchedRef = refs.find((r) => {
                 const { sex: rSex, ageMin, ageMax } = extractRefRange(r);
-                const sexMatches = rSex === "U" || rSex === sex;
-                const ageMinOk = ageMin === undefined || ageMin === null || (patientAge >= Number(ageMin));
-                const ageMaxOk = ageMax === undefined || ageMax === null || (patientAge <= Number(ageMax));
-                return sexMatches && ageMinOk && ageMaxOk;
+                return (
+                    (rSex === "U" || rSex === sex) &&
+                    (ageMin === undefined || patientAge >= Number(ageMin)) &&
+                    (ageMax === undefined || patientAge <= Number(ageMax))
+                );
             });
 
-            // 4) Interpret value
-            let interpretation = "N"; // Normal by default
+            let interpretation = "N";
             if (matchedRef && typeof finalValue === "number") {
                 const { low, high, critLow, critHigh } = extractRefRange(matchedRef);
-                const nLow = low === undefined ? undefined : Number(low);
-                const nHigh = high === undefined ? undefined : Number(high);
-                const nCritLow = critLow === undefined ? undefined : Number(critLow);
-                const nCritHigh = critHigh === undefined ? undefined : Number(critHigh);
-
-                if (nCritLow !== undefined && finalValue < nCritLow) interpretation = "CRIT_LOW";
-                else if (nCritHigh !== undefined && finalValue > nCritHigh) interpretation = "CRIT_HIGH";
-                else if (nLow !== undefined && finalValue < nLow) interpretation = "L";
-                else if (nHigh !== undefined && finalValue > nHigh) interpretation = "H";
-                else interpretation = "N";
+                if (critLow !== undefined && finalValue < Number(critLow)) interpretation = "CRIT_LOW";
+                else if (critHigh !== undefined && finalValue > Number(critHigh)) interpretation = "CRIT_HIGH";
+                else if (low !== undefined && finalValue < Number(low)) interpretation = "L";
+                else if (high !== undefined && finalValue > Number(high)) interpretation = "H";
             } else {
                 interpretation = "NO_REF";
             }
 
-            // push processed
             processedTests.push({
                 localTestId,
                 loinc,
@@ -260,34 +221,32 @@ async function main() {
             });
         } catch (err) {
             console.error("Error processing test item", t, err);
-            errors.push({ localTestId: t.localTestId || "_unknown", reason: err?.message || String(err) });
+            errors.push({ localTestId: t.localTestId || "_unknown", reason: err.message });
         }
-    } // end for each test
+    }
 
-    // If any errors, optionally update incoming document and return rejected
     if (errors.length) {
         if (data.incomingDocId) {
             try {
-                await databases.updateDocument(DB_ID, COLS.INCOMING, data.incomingDocId, { status: "rejected", errors });
-            } catch (errUpdate) {
-                console.warn("Failed to update incoming doc status to rejected:", errUpdate);
-            }
+                await databases.updateDocument(DB_ID, COLS.INCOMING, data.incomingDocId, {
+                    status: "rejected",
+                    errors,
+                });
+            } catch { }
         }
         return console.log(JSON.stringify({ ok: false, status: "rejected", errors }));
     }
 
-    // No errors -> create observation docs, diagnostic report, audit log
     try {
         const obsIds = [];
         for (const obs of processedTests) {
-            // observation doc shape (match your observations collection fields)
             const obsDoc = {
                 loincCode: obs.loinc,
-                patientId: data.P_id || data.P_id,
+                patientId: data.P_id,
                 patientName: data.p_name,
                 value: obs.value,
                 unit: obs.unit,
-                abnormalFlag: obs.interpretation, // N, H, L, CRIT_*
+                abnormalFlag: obs.interpretation,
                 status: "final",
                 recordedAt: obs.timestamp,
                 performer: submittedBy,
@@ -301,26 +260,21 @@ async function main() {
             patientId: data.P_id,
             patientName: data.p_name,
             reportDate: new Date().toISOString(),
-            summary: "", // optional
             observationIds: obsIds,
             status: "final",
             performedBy: submittedBy,
-            healthsecterid: data.healthsecterid || null,
             issuedAt: new Date().toISOString(),
         };
         const reportResp = await databases.createDocument(DB_ID, COLS.REPORTS, sdk.ID.unique(), reportDoc);
 
-        // Audit
         await databases.createDocument(DB_ID, COLS.AUDIT, sdk.ID.unique(), {
             userId: submittedBy,
             action: "create_diagnostic_report",
             targetCollection: COLS.REPORTS,
             targetId: reportResp.$id,
             timestamp: new Date().toISOString(),
-            details: { observationIds: obsIds, loincs: processedTests.map((p) => p.loinc) },
         });
 
-        // Update incoming doc status -> validated + link
         if (data.incomingDocId) {
             try {
                 await databases.updateDocument(DB_ID, COLS.INCOMING, data.incomingDocId, {
@@ -328,33 +282,25 @@ async function main() {
                     reportId: reportResp.$id,
                     validatedAt: new Date().toISOString(),
                 });
-            } catch (errUpdate) {
-                console.warn("Failed to update incoming doc to validated:", errUpdate);
-            }
+            } catch { }
         }
 
-        // Return processed results and observation ids for the frontend
-        return console.log(
-            JSON.stringify({
-                ok: true,
-                reportId: reportResp.$id,
-                observations: obsIds,
-                results: processedTests,
-            })
-        );
+        return console.log(JSON.stringify({ ok: true, reportId: reportResp.$id, observations: obsIds, results: processedTests }));
     } catch (err) {
         console.error("Create observations/report failed:", err);
-        // Try to flag incoming as error
         if (data.incomingDocId) {
             try {
-                await databases.updateDocument(DB_ID, COLS.INCOMING, data.incomingDocId, { status: "error", error: String(err) });
-            } catch (ignore) { }
+                await databases.updateDocument(DB_ID, COLS.INCOMING, data.incomingDocId, {
+                    status: "error",
+                    error: String(err),
+                });
+            } catch { }
         }
-        return console.log(JSON.stringify({ ok: false, reason: "create_failed", error: err?.message || String(err) }));
+        return console.log(JSON.stringify({ ok: false, reason: "create_failed", error: err.message }));
     }
 }
 
 main().catch((err) => {
     console.error("Fatal error:", err);
-    console.log(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+    console.log(JSON.stringify({ ok: false, error: err.message }));
 });
