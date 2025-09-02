@@ -15,15 +15,14 @@ const canonical = {
     "percent": "%"
 };
 
-function normalizeUnit(u) {
+export function normalizeUnit(u) {
     if (!u) return null;
     const key = String(u).trim().toLowerCase();
     return canonical[key] || null;
 }
 
 // convertIfNeeded(value, fromUnitCanonical, toUnitCanonical)
-// supports a small safe set: g/dL <-> g/L, mg/dL <-> mmol/L (glucose), mg/dL <-> g/L
-function convertIfNeeded(value, fromUnit, toUnit) {
+export function convertIfNeeded(value, fromUnit, toUnit) {
     if (fromUnit === toUnit) return { value, note: null };
 
     // g/dL <-> g/L
@@ -34,17 +33,13 @@ function convertIfNeeded(value, fromUnit, toUnit) {
     if (fromUnit === "mg/dL" && toUnit === "g/L") return { value: value * 0.01, note: "mg/dL->g/L" };
     if (fromUnit === "g/L" && toUnit === "mg/dL") return { value: value / 0.01, note: "g/L->mg/dL" };
 
-    // mg/dL <-> mmol/L (glucose and some analytes) — default factor for glucose 18.0182
-    // CAVEAT: only correct for analytes where conversion factor is known. Use mapping per loinc if needed.
+    // mg/dL <-> mmol/L (glucose factor)
     const GLUCOSE_FACTOR = 18.0182;
     if (fromUnit === "mg/dL" && toUnit === "mmol/L") return { value: value / GLUCOSE_FACTOR, note: "mg/dL->mmol/L (glucose factor 18.0182)" };
     if (fromUnit === "mmol/L" && toUnit === "mg/dL") return { value: value * GLUCOSE_FACTOR, note: "mmol/L->mg/dL (glucose factor 18.0182)" };
 
-    // IU/L or percent conversions: usually no conversion
-    if ((fromUnit === "IU/L" || fromUnit === "IU/L") && (toUnit === "IU/L")) return { value, note: null };
+    // IU/L or percent conversions: no conversion
+    if (fromUnit === "IU/L" && toUnit === "IU/L") return { value, note: null };
 
-    // Unknown conversion: throw to let caller decide
     throw new Error(`Unsupported conversion ${fromUnit} -> ${toUnit}`);
 }
-
-module.exports = { normalizeUnit, convertIfNeeded };
