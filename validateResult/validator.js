@@ -1,13 +1,13 @@
-const { normalizeUnit, convertIfNeeded } = require("./ucum-utils");
+// validateResult/validateResult.js
+import { normalizeUnit, convertIfNeeded } from "./ucum-utils.js";
 
-// Define known tests (later this can come from DB or config)
 const TEST_CATALOG = {
     "glucose": { loinc: "2345-7", unit: "mg/dL", refLow: 70, refHigh: 110 },
     "hemoglobin": { loinc: "718-7", unit: "g/dL", refLow: 12, refHigh: 16 },
     "cholesterol": { loinc: "2093-3", unit: "mg/dL", refLow: 125, refHigh: 200 }
 };
 
-function validateResult(testCode, inputValue, inputUnitRaw) {
+export function validateResult(testCode, inputValue, inputUnitRaw) {
     if (!TEST_CATALOG[testCode]) {
         throw new Error(`Unknown test code: ${testCode}`);
     }
@@ -36,9 +36,7 @@ function validateResult(testCode, inputValue, inputUnitRaw) {
         value: finalValue,
         unit,
         refRange: `${testMeta.refLow} – ${testMeta.refHigh} ${unit}`,
-        abnormalFlag: isAbnormal ? "H/L" : "N", // High/Low/Normal
+        abnormalFlag: isAbnormal ? "H/L" : "N",
         conversionNote: converted.note
     };
 }
-
-module.exports = { validateResult };

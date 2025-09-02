@@ -2,12 +2,12 @@
 
 // --- Imports ---
 import fs from "fs";
-import sdk from "node-appwrite";
+import { Client, Databases, ID, Query } from "node-appwrite";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import dayjs from "dayjs";
 
-// Local helper (ensure ./validateResult/ucum-utils.js exists and uses export)
+// Local helper (make sure ./validateResult/ucum-utils.js uses `export` not `module.exports`)
 import { normalizeUnit, convertIfNeeded } from "./validateResult/ucum-utils.js";
 
 // --- Config (read from Appwrite env vars) ---
@@ -30,11 +30,11 @@ const COLS = {
 };
 
 // --- Appwrite SDK ---
-const client = new sdk.Client()
+const client = new Client()
     .setEndpoint(APPWRITE_ENDPOINT)
     .setProject(APPWRITE_PROJECT)
     .setKey(APPWRITE_KEY);
-const databases = new sdk.Databases(client);
+const databases = new Databases(client);
 
 // --- AJV validation ---
 const ajv = new Ajv({ allErrors: true, strict: false });
@@ -118,7 +118,7 @@ function extractRefRange(refDoc) {
 }
 
 // --- Main ---
-async function main() {
+export default async function main(req, res) {
     const payload = readPayload();
     const data = payload.payload || payload || {};
 
@@ -126,7 +126,7 @@ async function main() {
     if (!ok) {
         const errors = validateIncoming.errors || [];
         console.error("Schema validation failed:", errors);
-        return console.log(JSON.stringify({ ok: false, reason: "schema", errors }));
+        return res.json({ ok: false, reason: "schema", errors });
     }
 
     const patientAge = typeof data.P_age === "string" ? parseFloat(data.P_age) : data.P_age;
@@ -146,8 +146,8 @@ async function main() {
             let mapping = mappingCache[localTestId];
             if (!mapping) {
                 const mapResp = await databases.listDocuments(DB_ID, COLS.MAPPINGS, [
-                    sdk.Query.equal("localTestId", localTestId),
-                    sdk.Query.limit(1),
+                    Query.equal("localTestId", localTestId),
+                    Query.limit(1),
                 ]);
                 mapping = (mapResp.documents && mapResp.documents[0]) || null;
                 mappingCache[localTestId] = mapping;
@@ -184,7 +184,7 @@ async function main() {
 
             let refs = refCache[loinc];
             if (!refs) {
-                const refResp = await databases.listDocuments(DB_ID, COLS.REFS, [sdk.Query.equal("loinc", loinc)]);
+                const refResp = await databases.listDocuments(DB_ID, COLS.REFS, [Query.equal("loinc", loinc)]);
                 refs = refResp.documents || [];
                 refCache[loinc] = refs;
             }
@@ -234,7 +234,7 @@ async function main() {
                 });
             } catch { }
         }
-        return console.log(JSON.stringify({ ok: false, status: "rejected", errors }));
+        return res.json({ ok: false, status: "rejected", errors });
     }
 
     try {
@@ -252,7 +252,7 @@ async function main() {
                 performer: submittedBy,
                 rawTest: obs,
             };
-            const obsResp = await databases.createDocument(DB_ID, COLS.OBS, sdk.ID.unique(), obsDoc);
+            const obsResp = await databases.createDocument(DB_ID, COLS.OBS, ID.unique(), obsDoc);
             obsIds.push(obsResp.$id);
         }
 
@@ -265,9 +265,9 @@ async function main() {
             performedBy: submittedBy,
             issuedAt: new Date().toISOString(),
         };
-        const reportResp = await databases.createDocument(DB_ID, COLS.REPORTS, sdk.ID.unique(), reportDoc);
+        const reportResp = await databases.createDocument(DB_ID, COLS.REPORTS, ID.unique(), reportDoc);
 
-        await databases.createDocument(DB_ID, COLS.AUDIT, sdk.ID.unique(), {
+        await databases.createDocument(DB_ID, COLS.AUDIT, ID.unique(), {
             userId: submittedBy,
             action: "create_diagnostic_report",
             targetCollection: COLS.REPORTS,
@@ -285,7 +285,7 @@ async function main() {
             } catch { }
         }
 
-        return console.log(JSON.stringify({ ok: true, reportId: reportResp.$id, observations: obsIds, results: processedTests }));
+        return res.json({ ok: true, reportId: reportResp.$id, observations: obsIds, results: processedTests });
     } catch (err) {
         console.error("Create observations/report failed:", err);
         if (data.incomingDocId) {
@@ -296,11 +296,6 @@ async function main() {
                 });
             } catch { }
         }
-        return console.log(JSON.stringify({ ok: false, reason: "create_failed", error: err.message }));
+        return res.json({ ok: false, reason: "create_failed", error: err.message });
     }
 }
-
-main().catch((err) => {
-    console.error("Fatal error:", err);
-    console.log(JSON.stringify({ ok: false, error: err.message }));
-});
