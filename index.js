@@ -38,7 +38,7 @@ addFormats(ajv);
 
 const incomingSchema = {
     type: "object",
-    required: ["P_name", "P_age", "P_id", "result", "submittedBy", "submittedAt", "healthsecterid"],
+    required: ["P_name", "P_age", "P_id", "submittedBy", "submittedAt", "healthsecterid"],
     properties: {
         P_name: { type: "string" },
         P_age: { type: ["number", "string"] },
@@ -48,7 +48,6 @@ const incomingSchema = {
         doc_profile: { type: "string" },
         result: {
             type: "array",
-            minItems: 1,
             items: {
                 type: "object",
                 required: ["localTestId", "value", "unit", "timestamp"],
@@ -76,6 +75,7 @@ const incomingSchema = {
         submittedBy: { type: "string" },
         submittedAt: { type: "string", format: "date-time" },
         incomingDocId: { type: "string" },
+        $createdAt: { type: "string", format: "date-time" },
     },
 };
 
@@ -86,13 +86,13 @@ function readPayload() {
     try {
         if (process.env.APPWRITE_FUNCTION_EVENT_DATA) {
             const eventData = JSON.parse(process.env.APPWRITE_FUNCTION_EVENT_DATA);
-            console.log("Raw event payload:", eventData); // Debug logging
+            console.log("Raw event payload:", eventData);
             return eventData;
         }
         const stdin = fs.readFileSync(0, "utf8");
         if (stdin && stdin.trim()) {
             const stdinData = JSON.parse(stdin);
-            console.log("Raw stdin payload:", stdinData); // Debug logging
+            console.log("Raw stdin payload:", stdinData);
             return stdinData;
         }
     } catch (err) {
@@ -102,7 +102,7 @@ function readPayload() {
 }
 
 function preprocessPayload(data) {
-    console.log("Original payload:", data); // Debug logging
+    console.log("Original payload:", data);
     const normalizedData = {
         P_name: data.P_name || data.p_name || data.patientName || "Unknown Patient",
         P_age: data.P_age || data.p_age || data.patientAge || 0,
@@ -111,11 +111,12 @@ function preprocessPayload(data) {
         doc_name: data.doc_name || data.submittedBy || data.staff_name || "Unknown Doctor",
         $createdAt: data.$createdAt || data.submittedAt || new Date().toISOString(),
         healthsecterid: data.healthsecterid || data.healthSectorId || "unknown",
-        ...data, // Preserve other fields
+        ...data,
         submittedBy: data.doc_name || data.submittedBy || data.staff_name || "Unknown Doctor",
         submittedAt: data.$createdAt || data.submittedAt || new Date().toISOString(),
+        incomingDocId: data.$id || data.incomingDocId || ID.unique(),
     };
-    console.log("Preprocessed payload:", normalizedData); // Debug logging
+    console.log("Preprocessed payload:", normalizedData);
     return normalizedData;
 }
 
@@ -142,6 +143,22 @@ async function processLabResults(data) {
     const patientAge = typeof data.P_age === "string" ? parseFloat(data.P_age) : data.P_age;
     const sex = (data.sex || data.P_sex || data.P_gender || "U").toUpperCase();
     const submittedBy = data.submittedBy || data.staff_id || "unknown";
+
+    // If result is empty or missing, mark document as validated but skip processing
+    if (!Array.isArray(data.result) || data.result.length === 0) {
+        if (data.incomingDocId) {
+            try {
+                await databases.updateDocument(DB_ID, COLS.INCOMING, data.incomingDocId, {
+                    status: "validated",
+                    validatedAt: new Date().toISOString(),
+                });
+                console.log("No results to process, marked document as validated");
+            } catch (e) {
+                console.error("Failed to update INCOMING doc with no results:", e);
+            }
+        }
+        return;
+    }
 
     const processedTests = [];
     const errors = [];
@@ -317,7 +334,11 @@ async function processLabResults(data) {
 // --- Main Function Entry ---
 export default async function main() {
     const payload = readPayload();
-    const data = preprocessPayload(payload.payload || payload || {});
+    if (!payload || !payload.$collectionId || payload.$collectionId !== COLS.INCOMING) {
+        console.error("Invalid or missing payload, expected document from INCOMING collection");
+        return JSON.stringify({ ok: false, reason: "Invalid payload or collection" });
+    }
+    const data = preprocessPayload(payload);
     const ok = validateIncoming(data);
     if (!ok) {
         const errors = validateIncoming.errors || [];
