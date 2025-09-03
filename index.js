@@ -38,7 +38,7 @@ addFormats(ajv);
 
 const incomingSchema = {
     type: "object",
-    required: ["P_name", "P_age", "P_id", "result", "doc_name", "$createdAt", "healthsecterid"],
+    required: ["P_name", "P_age", "P_id", "result", "submittedBy", "submittedAt", "healthsecterid"],
     properties: {
         P_name: { type: "string" },
         P_age: { type: ["number", "string"] },
@@ -76,7 +76,6 @@ const incomingSchema = {
         submittedBy: { type: "string" },
         submittedAt: { type: "string", format: "date-time" },
         incomingDocId: { type: "string" },
-        $createdAt: { type: "string", format: "date-time" },
     },
 };
 
@@ -319,27 +318,23 @@ async function processLabResults(data) {
 export default async function main() {
     const payload = readPayload();
     const data = preprocessPayload(payload.payload || payload || {});
-
     const ok = validateIncoming(data);
     if (!ok) {
         const errors = validateIncoming.errors || [];
         console.error("Schema validation failed:", errors);
         return JSON.stringify({ ok: false, reason: "schema", errors });
     }
-
     // ✅ Respond immediately to avoid timeout
     const response = {
         ok: true,
         status: "processing",
         incomingDocId: data.incomingDocId || null,
     };
-
     // 🚀 Process heavy work in background
     process.nextTick(() => {
         processLabResults(data).catch((err) => {
             console.error("Background processing failed:", err);
         });
     });
-
     return JSON.stringify(response);
 }
