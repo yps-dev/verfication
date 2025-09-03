@@ -7,19 +7,15 @@ import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import dayjs from "dayjs";
 
-// Local helper (make sure ./validateResult/ucum-utils.js uses `export` not `module.exports`)
+// Local helper
 import { normalizeUnit, convertIfNeeded } from "./validateResult/ucum-utils.js";
 
-// --- Config (read from Appwrite env vars) ---
-const APPWRITE_ENDPOINT =
-    process.env.APPWRITE_ENDPOINT || process.env.APPWRITE_FUNCTION_ENDPOINT;
-const APPWRITE_PROJECT =
-    process.env.APPWRITE_PROJECT || process.env.APPWRITE_FUNCTION_PROJECT;
-const APPWRITE_KEY =
-    process.env.APPWRITE_API_KEY || process.env.APPWRITE_FUNCTION_KEY;
-const DB_ID = process.env.DB_ID || "67a081e10018a7e7ec5a"; // replace if needed
+// --- Config ---
+const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT || process.env.APPWRITE_FUNCTION_ENDPOINT;
+const APPWRITE_PROJECT = process.env.APPWRITE_PROJECT || process.env.APPWRITE_FUNCTION_PROJECT;
+const APPWRITE_KEY = process.env.APPWRITE_API_KEY || process.env.APPWRITE_FUNCTION_KEY;
+const DB_ID = process.env.DB_ID || "67a081e10018a7e7ec5a";
 
-// Collections
 const COLS = {
     INCOMING: "67efb45500302fe3bd98",
     MAPPINGS: "68b6ee5b000a7a6dc1ce",
@@ -117,18 +113,8 @@ function extractRefRange(refDoc) {
     return { low, high, critLow, critHigh, sex, ageMin, ageMax, unit };
 }
 
-// --- Main ---
-export default async function main(req, res) {
-    const payload = readPayload();
-    const data = payload.payload || payload || {};
-
-    const ok = validateIncoming(data);
-    if (!ok) {
-        const errors = validateIncoming.errors || [];
-        console.error("Schema validation failed:", errors);
-        return res.json({ ok: false, reason: "schema", errors });
-    }
-
+// --- Heavy Processor (runs async in background) ---
+async function processLabResults(data) {
     const patientAge = typeof data.P_age === "string" ? parseFloat(data.P_age) : data.P_age;
     const sex = (data.sex || data.P_sex || data.P_gender || "U").toUpperCase();
     const submittedBy = data.submittedBy || data.staff_id || "unknown";
@@ -142,7 +128,7 @@ export default async function main(req, res) {
         try {
             const localTestId = t.localTestId;
 
-            // load mapping
+            // Load mapping
             let mapping = mappingCache[localTestId];
             if (!mapping) {
                 const mapResp = await databases.listDocuments(DB_ID, COLS.MAPPINGS, [
@@ -225,6 +211,7 @@ export default async function main(req, res) {
         }
     }
 
+    // Update DB
     if (errors.length) {
         if (data.incomingDocId) {
             try {
@@ -232,9 +219,11 @@ export default async function main(req, res) {
                     status: "rejected",
                     errors,
                 });
-            } catch { }
+            } catch (e) {
+                console.error("Failed to update rejected INCOMING doc", e);
+            }
         }
-        return res.json({ ok: false, status: "rejected", errors });
+        return;
     }
 
     try {
@@ -282,10 +271,10 @@ export default async function main(req, res) {
                     reportId: reportResp.$id,
                     validatedAt: new Date().toISOString(),
                 });
-            } catch { }
+            } catch (e) {
+                console.error("Failed to update validated INCOMING doc", e);
+            }
         }
-
-        return res.json({ ok: true, reportId: reportResp.$id, observations: obsIds, results: processedTests });
     } catch (err) {
         console.error("Create observations/report failed:", err);
         if (data.incomingDocId) {
@@ -294,8 +283,36 @@ export default async function main(req, res) {
                     status: "error",
                     error: String(err),
                 });
-            } catch { }
+            } catch (e) {
+                console.error("Failed to update error INCOMING doc", e);
+            }
         }
-        return res.json({ ok: false, reason: "create_failed", error: err.message });
     }
+}
+
+// --- Main Export ---
+export default async function main(req, res) {
+    const payload = readPayload();
+    const data = payload.payload || payload || {};
+
+    const ok = validateIncoming(data);
+    if (!ok) {
+        const errors = validateIncoming.errors || [];
+        console.error("Schema validation failed:", errors);
+        return res.json({ ok: false, reason: "schema", errors });
+    }
+
+    // ✅ Respond fast
+    res.json({
+        ok: true,
+        status: "processing",
+        incomingDocId: data.incomingDocId || null,
+    });
+
+    // 🚀 Continue heavy work in background
+    process.nextTick(() => {
+        processLabResults(data).catch((err) => {
+            console.error("Background processing failed:", err);
+        });
+    });
 }
