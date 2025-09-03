@@ -86,10 +86,16 @@ const validateIncoming = ajv.compile(incomingSchema);
 function readPayload() {
     try {
         if (process.env.APPWRITE_FUNCTION_EVENT_DATA) {
-            return JSON.parse(process.env.APPWRITE_FUNCTION_EVENT_DATA);
+            const eventData = JSON.parse(process.env.APPWRITE_FUNCTION_EVENT_DATA);
+            console.log("Raw event payload:", eventData); // Debug logging
+            return eventData;
         }
         const stdin = fs.readFileSync(0, "utf8");
-        if (stdin && stdin.trim()) return JSON.parse(stdin);
+        if (stdin && stdin.trim()) {
+            const stdinData = JSON.parse(stdin);
+            console.log("Raw stdin payload:", stdinData); // Debug logging
+            return stdinData;
+        }
     } catch (err) {
         console.error("Failed to parse payload:", err);
     }
@@ -97,12 +103,21 @@ function readPayload() {
 }
 
 function preprocessPayload(data) {
-    // Map doc_name to submittedBy and $createdAt to submittedAt
-    return {
-        ...data,
-        submittedBy: data.doc_name || data.submittedBy || "unknown",
+    console.log("Original payload:", data); // Debug logging
+    const normalizedData = {
+        P_name: data.P_name || data.p_name || data.patientName || "Unknown Patient",
+        P_age: data.P_age || data.p_age || data.patientAge || 0,
+        P_id: data.P_id || data.p_id || data.patientId || ID.unique(),
+        result: Array.isArray(data.result) ? data.result : [],
+        doc_name: data.doc_name || data.submittedBy || data.staff_name || "Unknown Doctor",
+        $createdAt: data.$createdAt || data.submittedAt || new Date().toISOString(),
+        healthsecterid: data.healthsecterid || data.healthSectorId || "unknown",
+        ...data, // Preserve other fields
+        submittedBy: data.doc_name || data.submittedBy || data.staff_name || "Unknown Doctor",
         submittedAt: data.$createdAt || data.submittedAt || new Date().toISOString(),
     };
+    console.log("Preprocessed payload:", normalizedData); // Debug logging
+    return normalizedData;
 }
 
 function getLoincFromMapping(mapDoc) {
