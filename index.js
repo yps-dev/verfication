@@ -86,23 +86,25 @@ function readPayload() {
     try {
         if (process.env.APPWRITE_FUNCTION_EVENT_DATA) {
             const eventData = JSON.parse(process.env.APPWRITE_FUNCTION_EVENT_DATA);
-            console.log("Raw event payload:", eventData);
+            console.log("Raw event payload:", JSON.stringify(eventData, null, 2));
+            console.log("Event name:", process.env.APPWRITE_FUNCTION_EVENT);
             return eventData;
         }
         const stdin = fs.readFileSync(0, "utf8");
         if (stdin && stdin.trim()) {
             const stdinData = JSON.parse(stdin);
-            console.log("Raw stdin payload:", stdinData);
+            console.log("Raw stdin payload:", JSON.stringify(stdinData, null, 2));
             return stdinData;
         }
+        console.log("No event data or stdin provided");
     } catch (err) {
-        console.error("Failed to parse payload:", err);
+        console.error("Failed to parse payload:", err.message);
     }
     return {};
 }
 
 function preprocessPayload(data) {
-    console.log("Original payload:", data);
+    console.log("Original payload:", JSON.stringify(data, null, 2));
     const normalizedData = {
         P_name: data.P_name || data.p_name || data.patientName || "Unknown Patient",
         P_age: data.P_age || data.p_age || data.patientAge || 0,
@@ -116,7 +118,7 @@ function preprocessPayload(data) {
         submittedAt: data.$createdAt || data.submittedAt || new Date().toISOString(),
         incomingDocId: data.$id || data.incomingDocId || ID.unique(),
     };
-    console.log("Preprocessed payload:", normalizedData);
+    console.log("Preprocessed payload:", JSON.stringify(normalizedData, null, 2));
     return normalizedData;
 }
 
@@ -154,7 +156,7 @@ async function processLabResults(data) {
                 });
                 console.log("No results to process, marked document as validated");
             } catch (e) {
-                console.error("Failed to update INCOMING doc with no results:", e);
+                console.error("Failed to update INCOMING doc with no results:", e.message);
             }
         }
         return;
@@ -261,7 +263,7 @@ async function processLabResults(data) {
                     errors,
                 });
             } catch (e) {
-                console.error("Failed to update rejected INCOMING doc", e);
+                console.error("Failed to update rejected INCOMING doc", e.message);
             }
         }
         return;
@@ -313,19 +315,19 @@ async function processLabResults(data) {
                     validatedAt: new Date().toISOString(),
                 });
             } catch (e) {
-                console.error("Failed to update validated INCOMING doc", e);
+                console.error("Failed to update validated INCOMING doc", e.message);
             }
         }
     } catch (err) {
-        console.error("Create observations/report failed:", err);
+        console.error("Create observations/report failed:", err.message);
         if (data.incomingDocId) {
             try {
                 await databases.updateDocument(DB_ID, COLS.INCOMING, data.incomingDocId, {
                     status: "error",
-                    error: String(err),
+                    error: err.message,
                 });
             } catch (e) {
-                console.error("Failed to update error INCOMING doc", e);
+                console.error("Failed to update error INCOMING doc", e.message);
             }
         }
     }
@@ -334,15 +336,25 @@ async function processLabResults(data) {
 // --- Main Function Entry ---
 export default async function main() {
     const payload = readPayload();
-    if (!payload || !payload.$collectionId || payload.$collectionId !== COLS.INCOMING) {
-        console.error("Invalid or missing payload, expected document from INCOMING collection");
-        return JSON.stringify({ ok: false, reason: "Invalid payload or collection" });
+    if (!payload) {
+        console.error("Empty payload received, expected document from INCOMING collection");
+        return JSON.stringify({ ok: false, reason: "Empty payload" });
+    }
+    if (!payload.$collectionId) {
+        console.error("Payload missing $collectionId, received:", JSON.stringify(payload, null, 2));
+        return JSON.stringify({ ok: false, reason: "Missing $collectionId" });
+    }
+    if (payload.$collectionId !== COLS.INCOMING) {
+        console.error(
+            `Payload from wrong collection: ${payload.$collectionId}, expected: ${COLS.INCOMING} `
+        );
+        return JSON.stringify({ ok: false, reason: "Wrong collection", receivedCollection: payload.$collectionId });
     }
     const data = preprocessPayload(payload);
     const ok = validateIncoming(data);
     if (!ok) {
         const errors = validateIncoming.errors || [];
-        console.error("Schema validation failed:", errors);
+        console.error("Schema validation failed:", JSON.stringify(errors, null, 2));
         return JSON.stringify({ ok: false, reason: "schema", errors });
     }
     // ✅ Respond immediately to avoid timeout
@@ -354,7 +366,7 @@ export default async function main() {
     // 🚀 Process heavy work in background
     process.nextTick(() => {
         processLabResults(data).catch((err) => {
-            console.error("Background processing failed:", err);
+            console.error("Background processing failed:", err.message);
         });
     });
     return JSON.stringify(response);
