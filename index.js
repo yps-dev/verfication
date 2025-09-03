@@ -1,3 +1,4 @@
+
 // index.js (Appwrite Function) - validateResult (ESM compatible)
 
 // --- Imports ---
@@ -37,9 +38,9 @@ addFormats(ajv);
 
 const incomingSchema = {
     type: "object",
-    required: ["p_name", "P_age", "P_id", "result", "submittedBy", "submittedAt", "healthsecterid"],
+    required: ["P_name", "P_age", "P_id", "result", "doc_name", "$createdAt", "healthsecterid"],
     properties: {
-        p_name: { type: "string" },
+        P_name: { type: "string" },
         P_age: { type: ["number", "string"] },
         P_phone: { type: "string" },
         doc_id: { type: "string" },
@@ -75,6 +76,7 @@ const incomingSchema = {
         submittedBy: { type: "string" },
         submittedAt: { type: "string", format: "date-time" },
         incomingDocId: { type: "string" },
+        $createdAt: { type: "string", format: "date-time" },
     },
 };
 
@@ -92,6 +94,15 @@ function readPayload() {
         console.error("Failed to parse payload:", err);
     }
     return {};
+}
+
+function preprocessPayload(data) {
+    // Map doc_name to submittedBy and $createdAt to submittedAt
+    return {
+        ...data,
+        submittedBy: data.doc_name || data.submittedBy || "unknown",
+        submittedAt: data.$createdAt || data.submittedAt || new Date().toISOString(),
+    };
 }
 
 function getLoincFromMapping(mapDoc) {
@@ -148,7 +159,7 @@ async function processLabResults(data) {
             const unitRaw = t.unit || "";
             const normalizedUnit = normalizeUnit(unitRaw);
             if (!normalizedUnit) {
-                errors.push({ localTestId, reason: `Unknown unit: ${unitRaw}` });
+                errors.push({ localTestId, reason: `Unknown unit: ${unitRaw} ` });
                 continue;
             }
 
@@ -162,7 +173,7 @@ async function processLabResults(data) {
                     finalValue = converted.value;
                     finalUnit = canonicalUnitFromMapping;
                 } catch (err) {
-                    errors.push({ localTestId, reason: `Conversion failed: ${err.message}` });
+                    errors.push({ localTestId, reason: `Conversion failed: ${err.message} ` });
                     continue;
                 }
             }
@@ -231,7 +242,7 @@ async function processLabResults(data) {
             const obsDoc = {
                 loincCode: obs.loinc,
                 patientId: data.P_id,
-                patientName: data.p_name,
+                patientName: data.P_name,
                 value: obs.value,
                 unit: obs.unit,
                 abnormalFlag: obs.interpretation,
@@ -246,7 +257,7 @@ async function processLabResults(data) {
 
         const reportDoc = {
             patientId: data.P_id,
-            patientName: data.p_name,
+            patientName: data.P_name,
             reportDate: new Date().toISOString(),
             observationIds: obsIds,
             status: "final",
@@ -292,7 +303,7 @@ async function processLabResults(data) {
 // --- Main Function Entry ---
 export default async function main() {
     const payload = readPayload();
-    const data = payload.payload || payload || {};
+    const data = preprocessPayload(payload.payload || payload || {});
 
     const ok = validateIncoming(data);
     if (!ok) {
