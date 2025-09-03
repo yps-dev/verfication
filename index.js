@@ -5,7 +5,6 @@ import fs from "fs";
 import { Client, Databases, ID, Query } from "node-appwrite";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
-import dayjs from "dayjs";
 
 // Local helper
 import { normalizeUnit, convertIfNeeded } from "./validateResult/ucum-utils.js";
@@ -290,8 +289,8 @@ async function processLabResults(data) {
     }
 }
 
-// --- Main Export ---
-export default async function main(req, res) {
+// --- Main Function Entry ---
+export default async function main() {
     const payload = readPayload();
     const data = payload.payload || payload || {};
 
@@ -299,20 +298,22 @@ export default async function main(req, res) {
     if (!ok) {
         const errors = validateIncoming.errors || [];
         console.error("Schema validation failed:", errors);
-        return res.json({ ok: false, reason: "schema", errors });
+        return JSON.stringify({ ok: false, reason: "schema", errors });
     }
 
-    // ✅ Respond fast
-    res.json({
+    // ✅ Respond immediately to avoid timeout
+    const response = {
         ok: true,
         status: "processing",
         incomingDocId: data.incomingDocId || null,
-    });
+    };
 
-    // 🚀 Continue heavy work in background
+    // 🚀 Process heavy work in background
     process.nextTick(() => {
         processLabResults(data).catch((err) => {
             console.error("Background processing failed:", err);
         });
     });
+
+    return JSON.stringify(response);
 }
